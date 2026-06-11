@@ -1,0 +1,199 @@
+{
+  "name": "Alcovia Focus Session Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "focus-complete",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "focus-complete"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// IDEMPOTENCY CHECK — Deduplicate by Session ID\n// ============================================================\n// The same session might arrive multiple times because:\n// 1. Both devices sync the same session\n// 2. A sync is retried after a network error\n//\n// We use n8n's static data (persists across executions) to\n// track which session IDs we've already processed.\n// If we've seen this session before, we skip it.\n// ============================================================\n\nconst items = $input.all();\nconst processedSessions = $getWorkflowStaticData('global');\n\nif (!processedSessions.sessions) {\n  processedSessions.sessions = {};\n}\n\nconst results = [];\n\nfor (const item of items) {\n  // n8n puts the POST payload in item.json.body\n  const payload = item.json.body || item.json;\n  const sessionId = payload.sessionId;\n  \n  if (processedSessions.sessions[sessionId]) {\n    // DUPLICATE — already processed this session\n    console.log(`[DEDUP] Session ${sessionId} already processed, skipping`);\n    item.json.isDuplicate = true;\n  } else {\n    // NEW — first time seeing this session\n    processedSessions.sessions[sessionId] = new Date().toISOString();\n    item.json.isDuplicate = false;\n  }\n  \n  // ensure body fields are top level for next nodes just in case\n  item.json = { ...item.json, ...payload };\n  \n  results.push(item);\n}\n\nreturn results;"
+      },
+      "id": "dedup-check",
+      "name": "Dedup Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-not-duplicate",
+              "leftValue": "={{ $json.isDuplicate }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-not-duplicate",
+      "name": "If Not Duplicate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3001/api/notifications/mock",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "sessionId",
+              "value": "={{ $json.sessionId }}"
+            },
+            {
+              "name": "studentId",
+              "value": "={{ $json.studentId }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            },
+            {
+              "name": "streak",
+              "value": "={{ $json.streak }}"
+            },
+            {
+              "name": "coins",
+              "value": "={{ $json.coins }}"
+            },
+            {
+              "name": "coinsEarned",
+              "value": "={{ $json.coinsEarned }}"
+            },
+            {
+              "name": "focusMinutes",
+              "value": "={{ $json.focusMinutes }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-notification",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'Notification sent', sessionId: $json.sessionId }) }}"
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, message: 'Duplicate session, skipped', sessionId: $json.sessionId }) }}"
+      },
+      "id": "respond-duplicate",
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [910, 420]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Dedup Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup Check": {
+      "main": [
+        [
+          {
+            "node": "If Not Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Not Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    {
+      "name": "alcovia",
+      "id": "1"
+    }
+  ]
+}
